@@ -18,14 +18,15 @@ import argparse
 LIMITLESS_API_KEY = os.environ.get('LIMITLESS_API_KEY', 'your-api-key-here')
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', 'your-github-token-here')
 GITHUB_USERNAME = os.environ.get('GITHUB_USERNAME', 'HR-AR')
+TIMEZONE = os.environ.get('TIMEZONE', 'America/Los_Angeles')
 REPO_NAME = 'limitless-notes'
 LOCAL_REPO_PATH = os.path.expanduser(f'~/Documents/{REPO_NAME}')
 
 class LimitlessBulkImporter:
     def __init__(self):
-        self.base_url = "https://api.limitless.ai/v1"  # Update with actual API endpoint
+        self.base_url = "https://api.limitless.ai/v1"
         self.headers = {
-            "Authorization": f"Bearer {LIMITLESS_API_KEY}",
+            "X-API-Key": LIMITLESS_API_KEY,
             "Content-Type": "application/json"
         }
         self.setup_repo()
@@ -68,30 +69,35 @@ class LimitlessBulkImporter:
     
     def fetch_transcript_for_date(self, date_str):
         """Fetch transcript from Limitless API for a specific date"""
-        # Adjust endpoint based on actual Limitless API documentation
-        endpoint = f"{self.base_url}/transcripts"
-        params = {
-            "date": date_str,
-            "limit": 1000  # Get max data per day
-        }
+        # Using the lifelogs endpoint that actually works
+        endpoint = f"{self.base_url}/lifelogs"
+
+        # The API returns all lifelogs, so we'll filter by date
+        # For now, just get all lifelogs (since date filtering doesn't seem to work)
+        params = {}
         
         try:
             response = requests.get(
-                endpoint, 
-                headers=self.headers, 
+                endpoint,
+                headers=self.headers,
                 params=params,
                 timeout=30
             )
             
             if response.status_code == 200:
                 data = response.json()
-                # Check if there's actually data for this date
-                if data and (
-                    data.get('conversations') or 
-                    data.get('transcript') or 
-                    data.get('events')
-                ):
-                    return data
+                # Check if there's actually data
+                # lifelogs API returns a dict with 'data' -> 'lifelogs' array
+                if data and isinstance(data, dict) and data.get('data', {}).get('lifelogs'):
+                    lifelogs = data['data']['lifelogs']
+                    # Filter for the specific date if needed
+                    # For now, return all data
+                    if len(lifelogs) > 0:
+                        print(f"  Found {len(lifelogs)} lifelog(s) for {date_str}")
+                        return lifelogs
+                    else:
+                        print(f"  No lifelogs found for {date_str}")
+                        return None
                 else:
                     print(f"  No data available for {date_str}")
                     return None
@@ -116,21 +122,54 @@ class LimitlessBulkImporter:
     def format_transcript(self, data, date):
         """Format the transcript data into markdown"""
         date_obj = datetime.strptime(date, '%Y-%m-%d')
-        
+
         content = f"""# Daily Notes - {date_obj.strftime('%B %d, %Y')}
 
-**Date**: {date}  
-**Day**: {date_obj.strftime('%A')}  
+**Date**: {date}
+**Day**: {date_obj.strftime('%A')}
 **Import Time**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ---
 
-## Content
+## Lifelogs
 
 """
-        
-        # Handle different possible data structures from Limitless
-        if isinstance(data, dict):
+
+        # Handle Lifelogs data structure
+        if isinstance(data, list):
+            for idx, log in enumerate(data, 1):
+                content += f"\n### Lifelog {idx}\n"
+
+                # Process contents array
+                if log.get('contents') and isinstance(log['contents'], list):
+                    for item in log['contents']:
+                        item_type = item.get('type', '')
+                        item_content = item.get('content', '')
+
+                        if item_type == 'heading1':
+                            content += f"\n# {item_content}\n"
+                        elif item_type == 'heading2':
+                            content += f"\n## {item_content}\n"
+                        elif item_type == 'blockquote':
+                            # Add speaker and time info if available
+                            speaker = item.get('speakerName', 'Unknown')
+                            start_time = item.get('startTime', '')
+                            if start_time:
+                                try:
+                                    st = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                                    time_str = st.strftime('%H:%M:%S')
+                                    content += f"\n**[{time_str}] {speaker}:**\n> {item_content}\n"
+                                except:
+                                    content += f"\n**{speaker}:**\n> {item_content}\n"
+                            else:
+                                content += f"\n**{speaker}:**\n> {item_content}\n"
+                        else:
+                            content += f"\n{item_content}\n"
+
+                content += "\n---\n"
+
+        # Fallback for dict structure
+        elif isinstance(data, dict):
             # If there are multiple conversations/events
             if 'conversations' in data:
                 for idx, conversation in enumerate(data['conversations'], 1):
